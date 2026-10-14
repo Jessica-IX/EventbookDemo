@@ -15,8 +15,8 @@
   <h2>Attach Add-on Options to a Subcategory</h2>
   <div class="note">Only add-ons and subcategories with matching <strong>Event ID, City ID, and Package ID</strong> can be linked.</div>
   <div class="layout">
-    <section class="panel"><h3>1. Search Add-ons by Name</h3><input id="addon-search" type="search" placeholder="Search add-on name..."><div id="addon-results"></div></section>
-    <section class="panel"><h3>2. Search Options in Selected Add-on</h3><p class="muted" id="selected-addon-label">Select an add-on first.</p><input id="option-search" type="search" placeholder="Search option name..." disabled><div id="option-results" class="tags" style="margin-top:12px"></div></section>
+    <section class="panel"><h3>1. Search and Select Add-ons</h3><p class="muted">Select multiple add-ons. Click again to deselect.</p><input id="addon-search" type="search" placeholder="Search add-on name..."><div id="addon-results"></div></section>
+    <section class="panel"><h3>2. Select Options for Each Add-on</h3><p class="muted">Each selected add-on has its own searchable options.</p><div id="option-results"></div></section>
   </div>
   <div class="summary"><h3>Selected Relationships</h3><div id="subcategory-summary" class="muted"></div></div>
 </div>
@@ -48,7 +48,8 @@ const matchContext=(a,b)=>a.eventId===b.eventId&&a.cityId===b.cityId&&a.packageI
 const matches=(name,query)=>name.toLowerCase().includes(query.trim().toLowerCase());
 const selectedOptions=new Map(); // key: subcategory ID + addon ID; value: Set of option IDs
 const selectedNames=new Map(); // key: addon ID; value: Set of subcategory names
-let currentSubcategoryId=101,currentAddonId=201,chosenAddonId=null;
+let currentSubcategoryId=101,currentAddonId=201;
+const chosenAddonIds=new Set();
 function element(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
 function contextText(x){return `Event ${x.eventId} · City ${x.cityId} · Package ${x.packageId}`}
 function fillSelect(el,records){records.forEach(x=>{const opt=element('option','',`${x.name} — ${contextText(x)}`);opt.value=x.id;el.append(opt)})}
@@ -57,16 +58,71 @@ function renderAddonResults(){
  const parent=subcategories.find(x=>x.id===currentSubcategoryId),root=$('addon-results');root.replaceChildren();
  const available=addons.filter(a=>matchContext(a,parent)&&matches(a.name,$('addon-search').value));
  if(!available.length)root.append(element('p','muted','No matching add-ons in this event, city, and package.'));
- available.forEach(a=>{const b=element('button','item'+(chosenAddonId===a.id?' active':''));b.type='button';b.append(element('strong','',a.name),element('div','muted',`${a.options.length} options`));b.onclick=()=>{chosenAddonId=a.id;$('option-search').value='';renderSubcategoryMode()};root.append(b)})
+ available.forEach(a=>{
+  const active=chosenAddonIds.has(a.id);
+  const b=element('button','item'+(active?' active':''));
+  b.type='button';
+  b.setAttribute('aria-pressed',String(active));
+  b.append(element('strong','',(active?'✓ ':'')+a.name),element('div','muted',`${a.options.length} options`));
+  b.onclick=()=>{
+   if(active){
+    chosenAddonIds.delete(a.id);
+    selectedOptions.delete(`${currentSubcategoryId}:${a.id}`);
+   }else{
+    chosenAddonIds.add(a.id);
+   }
+   renderSubcategoryMode();
+  };
+  root.append(b);
+ });
 }
 function renderOptions(){
- const addon=addons.find(x=>x.id===chosenAddonId),root=$('option-results');root.replaceChildren();$('option-search').disabled=!addon;
- $('selected-addon-label').textContent=addon?`Options for ${addon.name}`:'Select an add-on first.';
- if(!addon)return;
- const key=`${currentSubcategoryId}:${addon.id}`,selected=selectedOptions.get(key)||new Set();
- const options=addon.options.filter(o=>matches(o.name,$('option-search').value));
- if(!options.length)root.append(element('p','muted','No matching options.'));
- options.forEach(o=>{const active=selected.has(o.id),b=element('button','tag'+(active?' selected':''),(active?'✓ ':'')+o.name);b.type='button';b.setAttribute('aria-pressed',String(active));b.onclick=()=>{const next=new Set(selectedOptions.get(key)||[]);if(next.has(o.id))next.delete(o.id);else next.add(o.id);if(next.size)selectedOptions.set(key,next);else selectedOptions.delete(key);renderSubcategoryMode()};root.append(b)})
+ const root=$('option-results');
+ // Preserve search text across selections and re-renders.
+ const searches=new Map([...root.querySelectorAll('input[data-addon-id]')].map(i=>[Number(i.dataset.addonId),i.value]));
+ root.replaceChildren();
+ const selectedAddons=addons.filter(a=>chosenAddonIds.has(a.id));
+ if(!selectedAddons.length){
+  root.append(element('p','muted','Select one or more add-ons first.'));
+  return;
+ }
+ selectedAddons.forEach(addon=>{
+  const group=element('section','option-group');
+  group.style.marginBottom='18px';
+  group.append(element('h3','',addon.name));
+  const search=element('input');
+  search.type='search';
+  search.placeholder=`Search ${addon.name} options...`;
+  search.dataset.addonId=addon.id;
+  search.value=searches.get(addon.id)||'';
+  const tags=element('div','tags');
+  tags.style.marginTop='10px';
+  const key=`${currentSubcategoryId}:${addon.id}`;
+  function renderTags(){
+   tags.replaceChildren();
+   const selected=selectedOptions.get(key)||new Set();
+   const filtered=addon.options.filter(o=>matches(o.name,search.value));
+   if(!filtered.length)tags.append(element('p','muted','No matching options.'));
+   filtered.forEach(o=>{
+    const active=selected.has(o.id);
+    const b=element('button','tag'+(active?' selected':''),(active?'✓ ':'')+o.name);
+    b.type='button';
+    b.setAttribute('aria-pressed',String(active));
+    b.onclick=()=>{
+     const next=new Set(selectedOptions.get(key)||[]);
+     if(next.has(o.id))next.delete(o.id);else next.add(o.id);
+     if(next.size)selectedOptions.set(key,next);else selectedOptions.delete(key);
+     renderTags();
+     renderSubcategorySummary();
+    };
+    tags.append(b);
+   });
+  }
+  search.oninput=renderTags;
+  group.append(search,tags);
+  root.append(group);
+  renderTags();
+ });
 }
 function renderSubcategorySummary(){const root=$('subcategory-summary');root.replaceChildren();let count=0;for(const a of addons){const ids=selectedOptions.get(`${currentSubcategoryId}:${a.id}`);if(!ids?.size)continue;count++;const names=a.options.filter(o=>ids.has(o.id)).map(o=>o.name).join(', ');root.append(element('p','',`${a.name}: ${names}`))}if(!count)root.textContent='No add-on options selected yet.'}
 function renderSubcategoryMode(){renderAddonResults();renderOptions();renderSubcategorySummary()}
@@ -78,7 +134,7 @@ function renderSubcategoryResults(){
  names.forEach(name=>{const selected=selectedNames.get(addon.id)||new Set(),active=selected.has(name),b=element('button','item'+(active?' active':''),(active?'✓ ':'')+name);b.type='button';b.setAttribute('aria-pressed',String(active));b.onclick=()=>{const next=new Set(selectedNames.get(addon.id)||[]);if(next.has(name))next.delete(name);else next.add(name);selectedNames.set(addon.id,next);renderAddonMode()};root.append(b)})
 }
 function renderAddonMode(){renderSubcategoryResults();const names=[...(selectedNames.get(currentAddonId)||[])];$('addon-summary').textContent=names.length?names.join(', '):'No subcategory names linked yet.'}
-$('addon-search').oninput=renderAddonResults;$('option-search').oninput=renderOptions;$('subcategory-search').oninput=renderSubcategoryResults;
+$('addon-search').oninput=renderAddonResults;$('subcategory-search').oninput=renderSubcategoryResults;
 function switchMode(mode){const sub=mode==='subcategory';$('subcategory-mode').classList.toggle('hidden',!sub);$('addon-mode').classList.toggle('hidden',sub)}
 $('relationship-type').onchange=e=>switchMode(e.target.value);
 renderSubcategoryMode();renderAddonMode();
